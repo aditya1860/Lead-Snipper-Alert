@@ -1,0 +1,540 @@
+{
+  "name": "Lead Sniper - High Value Stargazer Tracker",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "beaeedac-bde7-4592-8970-ea51265c6c90",
+      "name": "Schedule Trigger (Every 15 min)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -2640,
+        -112
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Load persisted state (last checked timestamp) from workflow static data.\n// This is what lets us treat GitHub's list as a stream instead of re-processing\n// the same stargazers every 15 minutes.\nconst staticData = $getWorkflowStaticData('global');\n\nif (!staticData.lastCheckedTimestamp) {\n  // First run ever: default to 24h ago so we don't backfill years of stars.\n  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();\n  staticData.lastCheckedTimestamp = yesterday;\n}\n\nreturn [{ json: { lastCheckedTimestamp: staticData.lastCheckedTimestamp } }];"
+      },
+      "id": "f39b6ed8-3a7d-4b5b-8ce9-291a230b0f07",
+      "name": "Load Last Checked Timestamp",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2416,
+        -112
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.github.com/repos/n8n-io/n8n/stargazers",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "per_page",
+              "value": "50"
+            },
+            {
+              "name": "page",
+              "value": "1"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.v3.star+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-Lead-Sniper"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "id": "5d76797a-2e5b-4689-8a21-b0ce1a11dd38",
+      "name": "GitHub: Get Stargazers",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -2192,
+        -112
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "PLACEHOLDER_CREDENTIAL_ID",
+          "name": "GitHub API Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// --- RATE LIMIT AWARENESS ---\n// GitHub returns rate-limit headers on every response. We read them here\n// and stash them on the item so a downstream node can decide to pause.\nconst response = $input.first().json;\nconst headers = response.headers || {};\nconst remaining = parseInt(headers['x-ratelimit-remaining'] || '60', 10);\nconst resetEpoch = parseInt(headers['x-ratelimit-reset'] || '0', 10);\n\nconst body = response.body || [];\n\nreturn body.map(star => ({\n  json: {\n    login: star.user.login,\n    starred_at: star.starred_at,\n    rateLimitRemaining: remaining,\n    rateLimitResetEpoch: resetEpoch\n  }\n}));"
+      },
+      "id": "eb61a95b-9506-4c9c-ab99-82772231ca29",
+      "name": "Parse Stargazers + Rate Headers",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1968,
+        -112
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-new-star",
+              "leftValue": "={{$json.starred_at}}",
+              "rightValue": "={{$('Load Last Checked Timestamp').item.json.lastCheckedTimestamp}}",
+              "operator": {
+                "type": "dateTime",
+                "operation": "after"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "4bceb469-e587-4008-95db-2deefa6780dd",
+      "name": "Filter: Only New Stars",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [
+        -1760,
+        -112
+      ]
+    },
+    {
+      "parameters": {
+        "options": {
+          "reset": false
+        }
+      },
+      "id": "9ee27d6c-fa5a-4bf9-8d5d-195804afcdde",
+      "name": "Loop Over New Stargazers",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -1536,
+        -112
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 1,
+        "unit": "seconds"
+      },
+      "id": "85d29115-47fd-4d01-9694-e685018658cf",
+      "name": "Throttle (1s between calls)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -1312,
+        16
+      ],
+      "webhookId": "c6817466-8f7a-4cff-89b6-27e12460c043"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.github.com/users/{{$json.login}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-Lead-Sniper"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "id": "e25259cd-8ef5-4dbe-a786-f43fb7504ffd",
+      "name": "GitHub: Enrich User Profile",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1088,
+        -112
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "PLACEHOLDER_CREDENTIAL_ID",
+          "name": "GitHub API Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Flatten body + re-check live rate limit headers on THIS call.\n// If GitHub says we're close to the wall (< 5 remaining), self-throttle harder.\nconst res = $input.first().json;\nconst headers = res.headers || {};\nconst body = res.body || {};\n\nconst remaining = parseInt(headers['x-ratelimit-remaining'] || '60', 10);\nconst resetEpoch = parseInt(headers['x-ratelimit-reset'] || '0', 10);\n\nreturn [{\n  json: {\n    login: body.login,\n    name: body.name,\n    company: body.company,\n    bio: body.bio,\n    location: body.location,\n    blog: body.blog,\n    avatar_url: body.avatar_url,\n    public_repos: body.public_repos,\n    followers: body.followers,\n    following: body.following,\n    rateLimitRemaining: remaining,\n    rateLimitResetEpoch: resetEpoch\n  }\n}];"
+      },
+      "id": "9050cb23-0e7e-402d-9ae3-0acef761a114",
+      "name": "Flatten Profile Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -880,
+        -112
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-followers",
+              "leftValue": "={{$json.followers}}",
+              "rightValue": 100,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            },
+            {
+              "id": "cond-repos",
+              "leftValue": "={{$json.public_repos}}",
+              "rightValue": 50,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "831e6667-4caf-4a4a-a420-6342b69e229e",
+      "name": "IF: High-Value Lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -656,
+        -112
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "anthropicApi",
+        "resource": "text",
+        "modelId": "claude-sonnet-4-6",
+        "messages": {
+          "values": [
+            {
+              "content": "=You are a B2B growth/sales assistant. Based on this GitHub profile, write EXACTLY one sentence (max 30 words) explaining why our team should reach out to this person as a high-value lead. Be specific — reference their company, bio, or repo activity if relevant. No preamble, no quotes, just the sentence.\n\nName: {{$json.name || $json.login}}\nCompany: {{$json.company || 'Not specified'}}\nBio: {{$json.bio || 'No bio provided'}}\nFollowers: {{$json.followers}}\nPublic Repos: {{$json.public_repos}}"
+            }
+          ]
+        },
+        "options": {
+          "maxTokensToSample": 150,
+          "temperature": 0.4
+        }
+      },
+      "id": "8c3ee263-8aef-4483-ac16-47b9219b1eb1",
+      "name": "AI: Generate Sales Pitch",
+      "type": "@n8n/n8n-nodes-langchain.anthropic",
+      "typeVersion": 1,
+      "position": [
+        -432,
+        -208
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "",
+          "name": "Anthropic account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const profile = $('Flatten Profile Data').item.json;\nconst pitch = $input.first().json.text || $input.first().json.content || 'High engagement profile worth a look.';\n\nconst blocks = [\n  {\n    type: 'section',\n    text: {\n      type: 'mrkdwn',\n      text: `*🎯 New High-Value Lead Detected*\\n*Name:* ${profile.name || profile.login}\\n*GitHub:* <https://github.com/${profile.login}|@${profile.login}>\\n*Company:* ${profile.company || 'N/A'}\\n*Followers:* ${profile.followers} | *Public Repos:* ${profile.public_repos}`\n    }\n  },\n  {\n    type: 'section',\n    text: {\n      type: 'mrkdwn',\n      text: `*Bio:* ${profile.bio || 'N/A'}`\n    }\n  },\n  {\n    type: 'section',\n    text: {\n      type: 'mrkdwn',\n      text: `*🤖 AI Sales Pitch:*\\n> ${pitch}`\n    }\n  }\n];\n\nreturn [{\n  json: {\n    text: `New High-Value Lead: ${profile.name || profile.login}`,\n    blocks\n  }\n}];"
+      },
+      "id": "1c7e2285-b11e-4331-8d77-fba2c0fd01aa",
+      "name": "Format Slack Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -208,
+        -208
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: $json.text, blocks: $json.blocks }) }}",
+        "options": {}
+      },
+      "id": "e6e9c2c4-a55b-449b-844f-8a347a0018a8",
+      "name": "Slack: Post Lead Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        16,
+        -208
+      ],
+      "notes": "Set SLACK_WEBHOOK_URL in n8n environment variables.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {},
+      "id": "32df6f84-0286-4853-84db-aaf77cda9806",
+      "name": "Skip (Low Value)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -432,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Persist the newest timestamp we saw this run so next poll only fetches fresh stars.\nconst staticData = $getWorkflowStaticData('global');\nconst items = $items('Parse Stargazers + Rate Headers');\n\nif (items.length > 0) {\n  const timestamps = items.map(i => new Date(i.json.starred_at).getTime());\n  const maxTs = Math.max(...timestamps);\n  staticData.lastCheckedTimestamp = new Date(maxTs).toISOString();\n}\n\nreturn [{ json: { updated: true, newTimestamp: staticData.lastCheckedTimestamp } }];"
+      },
+      "id": "a76152f0-9fd7-46e9-bcca-45b629d430bd",
+      "name": "Save Last Checked Timestamp",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        -112
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger (Every 15 min)": {
+      "main": [
+        [
+          {
+            "node": "Load Last Checked Timestamp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Last Checked Timestamp": {
+      "main": [
+        [
+          {
+            "node": "GitHub: Get Stargazers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GitHub: Get Stargazers": {
+      "main": [
+        [
+          {
+            "node": "Parse Stargazers + Rate Headers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Stargazers + Rate Headers": {
+      "main": [
+        [
+          {
+            "node": "Filter: Only New Stars",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter: Only New Stars": {
+      "main": [
+        [
+          {
+            "node": "Loop Over New Stargazers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over New Stargazers": {
+      "main": [
+        [
+          {
+            "node": "Save Last Checked Timestamp",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Throttle (1s between calls)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Throttle (1s between calls)": {
+      "main": [
+        [
+          {
+            "node": "GitHub: Enrich User Profile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GitHub: Enrich User Profile": {
+      "main": [
+        [
+          {
+            "node": "Flatten Profile Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flatten Profile Data": {
+      "main": [
+        [
+          {
+            "node": "IF: High-Value Lead?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: High-Value Lead?": {
+      "main": [
+        [
+          {
+            "node": "AI: Generate Sales Pitch",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip (Low Value)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Slack Message": {
+      "main": [
+        [
+          {
+            "node": "Slack: Post Lead Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack: Post Lead Alert": {
+      "main": [
+        [
+          {
+            "node": "Loop Over New Stargazers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip (Low Value)": {
+      "main": [
+        [
+          {
+            "node": "Loop Over New Stargazers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI: Generate Sales Pitch": {
+      "main": [
+        [
+          {
+            "node": "Format Slack Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "staticData": null,
+  "meta": {
+    "templateId": "lead-sniper-high-value-stargazer-tracker"
+  },
+  "pinData": {}
+}
