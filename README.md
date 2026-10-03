@@ -1,4 +1,5 @@
 # Lead Sniper — High-Value Stargazer Tracker
+https://n8n-latest-e0ot.onrender.com
 
 An automated n8n workflow that monitors a GitHub repository's stargazers, identifies high-value leads based on influence signals, enriches their profile data, generates an AI-written sales pitch, and posts a formatted alert to Slack — all without manual intervention.
 
